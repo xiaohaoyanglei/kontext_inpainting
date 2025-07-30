@@ -1,6 +1,7 @@
 import os
 import json
 from typing import Union
+from datetime import datetime
 
 import oyaml as yaml
 import re
@@ -42,9 +43,28 @@ def preprocess_config(config: OrderedDict, name: str = None):
         raise ValueError("config file must have a config section")
     if "name" not in config["config"] and name is None:
         raise ValueError("config file must have a config.name key")
+    
     # we need to replace tags. For now just [name]
     if name is None:
         name = config["config"]["name"]
+    
+    # 处理 Kontext-inpaint 的时间戳输出文件夹
+    if (config.get("job") == "extension" and 
+        "process" in config["config"] and 
+        len(config["config"]["process"]) > 0 and
+        "training_folder" in config["config"]["process"][0]):
+        
+        training_folder = config["config"]["process"][0]["training_folder"]
+        
+        # 如果是 training_output 路径，添加时间戳
+        if training_folder == "/cloud/cloud-ssd1/training_output":
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            new_training_folder = f"/cloud/cloud-ssd1/training_output_{timestamp}"
+            
+            # 更新配置
+            config["config"]["process"][0]["training_folder"] = new_training_folder
+            print(f"📁 输出文件夹: {new_training_folder}")
+    
     config_string = json.dumps(config)
     config_string = config_string.replace("[name]", name)
     config = json.loads(config_string, object_pairs_hook=OrderedDict)
