@@ -1,0 +1,109 @@
+---
+job: extension
+config:
+  # 训练任务名称，将作为输出文件夹名称
+  name: "flux_inpainting_standard_v1"
+  process:
+    - type: 'sd_trainer'  # 使用标准的SD训练器
+      # 输出文件夹
+      training_folder: "output"
+      # 训练设备
+      device: cuda:0
+      
+      # 保存配置
+      save:
+        dtype: bf16  # 保存精度
+        save_every: 250  # 每250步保存一次
+        max_step_saves_to_keep: 4  # 保留最近4个检查点
+      
+      # 数据集配置 - 关键部分！
+      datasets:
+        # AI-toolkit的标准inpainting数据集配置
+        # 🔧 请根据您的实际路径修改以下三个路径
+        - folder_path: "data/target_images"     # 目标图像文件夹（完整图像）
+          # inpainting特殊配置
+          inpaint_path: "data/masked_images"    # 带洞图像文件夹
+          mask_path: "data/masks"              # 掩码文件夹
+          
+          # 文本描述配置
+          caption_ext: "txt"
+          caption_dropout_rate: 0.05  # 5%的概率丢弃文本描述
+          
+          # 🔥 关键优化：预缓存latents到磁盘
+          cache_latents_to_disk: true  # 预处理VAE编码，大幅减少显存和提升速度
+          
+          # 多分辨率训练
+          resolution: [512, 768, 1024]  # FLUX支持多分辨率
+          
+          # 图像处理
+          shuffle_tokens: false
+          buckets: true  # 启用桶化以处理不同尺寸
+      
+      # 训练配置
+      train:
+        # 批次和累积
+        batch_size: 1  # 由于是全模型微调，使用小批次
+        gradient_accumulation_steps: 4  # 梯度累积，等效批次大小4
+        
+        # 训练目标
+        train_unet: true  # 训练FLUX transformer
+        train_text_encoder: false  # 不训练文本编码器
+        
+        # 优化器和学习率
+        optimizer: "adamw8bit"  # 8bit优化器节省显存
+        lr: 1e-4
+        
+        # 训练步数
+        steps: 2000  # 总训练步数
+        
+        # 显存优化
+        gradient_checkpointing: true  # 梯度检查点
+        
+        # FLUX特定配置
+        noise_scheduler: "flowmatch"  # FLUX使用flow matching
+        timestep_type: "flux_shift"   # FLUX时间步类型
+        
+        # 混合精度
+        dtype: bf16
+        
+        # EMA平滑
+        ema_config:
+          use_ema: true
+          ema_decay: 0.99
+      
+      # 模型配置
+      model:
+        # FLUX.1-dev模型
+        name_or_path: "black-forest-labs/FLUX.1-dev"
+        is_flux: true
+        quantize: true  # 8bit量化以节省显存
+        
+        # 🔥 如果是全模型微调，取消下面的注释
+        # 只训练transformer blocks，不训练其他组件
+        # only_if_contains: 
+        #   - "transformer_blocks."
+        #   - "single_transformer_blocks."
+      
+      # 采样配置（用于训练过程中的预览）
+      sample:
+        sampler: "flowmatch"  # 必须匹配训练的noise_scheduler
+        sample_every: 250  # 每250步生成一次预览
+        width: 1024
+        height: 1024
+        prompts:
+          - "a beautiful landscape with mountains and lakes"
+          - "a portrait of a person in artistic style"
+          - "architectural building with modern design"
+          - "still life with flowers and fruits"
+        neg: ""  # FLUX不使用负面提示
+        seed: 42
+        walk_seed: true
+        guidance_scale: 4  # FLUX的引导强度
+        sample_steps: 20
+
+# 元数据
+meta:
+  name: "[name]"
+  version: '1.0'
+  description: "FLUX.1-dev inpainting fine-tuning using standard sd_trainer"
+  author: "AI-Toolkit Migration" 

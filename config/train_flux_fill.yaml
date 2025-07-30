@@ -1,0 +1,31 @@
+#FLUX-Fill 模型的训练配置
+
+job: train
+
+config:
+  name: flux-fill-training-v1
+  training_folder: "/cloud/cloud-ssd1/training_output"
+
+  process:
+    - type: finetune
+      vae_path: "/cloud/cloud-ssd1/FLUX.1-dev/vae"
+      model_path: "/cloud/cloud-ssd1/FLUX.1-dev"
+      text_encoder_path: "/cloud/cloud-ssd1/FLUX.1-dev/text_encoder"
+      text_encoder_2_path: "/cloud/cloud-ssd1/FLUX.1-dev/text_encoder_2"
+      source_image_dir: "/cloud/cloud-ssd1/my_dataset/source_images"
+      target_image_dir: "/cloud/cloud-ssd1/my_dataset/target_images"
+      mask_dir: "/cloud/cloud-ssd1/my_dataset/masks"
+      
+      # --- 超参 ---
+      resolution: 512
+      batch_size: 1
+      num_epochs: 10
+      lr: 1.0e-5
+      
+      device: "cuda"    
+      
+      # ✅ 保留模型配置（虽然现在用不到，但保持一致）
+      model:
+        name_or_path: "/cloud/cloud-ssd1/FLUX.1-dev"
+        is_flux: true
+        quantize: true

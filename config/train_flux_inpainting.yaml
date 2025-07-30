@@ -1,0 +1,48 @@
+config:
+  name: flux_inpainting_migrated_v1_single_gpu
+  process:
+  - datasets:
+    - folder_path: /cloud/cloud-ssd1/my_dataset/target_images
+      inpaint_path: /cloud/cloud-ssd1/my_dataset/source_images
+      mask_path: /cloud/cloud-ssd1/my_dataset/masks
+      caption_ext: txt
+      caption_dropout_rate: 0.05
+      cache_latents_to_disk: true
+      buckets: true
+      resolution: 512
+      shuffle_tokens: false
+    device: cuda:0
+    model:
+      is_flux: true
+      name_or_path: /cloud/cloud-ssd1/FLUX.1-Fill-dev
+      quantize: false
+    sample:
+      enabled: false  # 暂时禁用采样，避免inpainting采样bug
+    save:
+      dtype: bf16
+      max_step_saves_to_keep: 3
+      save_every: 500
+    train:
+      batch_size: 1
+      dtype: bf16
+      ema_config:
+        ema_decay: 0.99
+        use_ema: false
+      gradient_accumulation_steps: 4
+      gradient_checkpointing: true
+      lr: 5e-5
+      noise_scheduler: flowmatch
+      optimizer: adamw8bit
+      steps: 2000
+      timestep_type: flux_shift
+      train_text_encoder: false
+      train_unet: true
+      is_inpainting: true
+    training_folder: /cloud/cloud-ssd1/training_output
+    type: sd_trainer
+job: extension
+meta:
+  author: AI-Toolkit Migration
+  description: FLUX.1-Fill-dev inpainting training with automatic x_embedder adaptation
+  name: flux_inpainting_migrated_v1_single_gpu
+  version: '1.0'

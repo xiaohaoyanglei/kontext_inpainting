@@ -1,0 +1,13 @@
+*.ckpt
+*.safetensors
+*.pt
+*.pth
+*.bin
+*.log
+*.tmp
+__pycache__/
+checkpoints/
+logs/
+outputs/
+*.npy
+*.npz
