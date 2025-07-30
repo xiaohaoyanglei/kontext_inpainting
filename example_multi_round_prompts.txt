@@ -1,0 +1,17 @@
+# Kontext-inpaint 多轮编辑示例提示词
+# 每行一个提示词，将按顺序进行编辑
+
+# 第一轮：基础风格变化
+make this image look like a vintage photograph
+
+# 第二轮：添加元素
+add warm golden lighting
+
+# 第三轮：背景修改  
+change the background to a cozy cafe
+
+# 第四轮：细节调整
+make the person smile more naturally
+
+# 第五轮：最终优化
+enhance the overall mood to be more cheerful

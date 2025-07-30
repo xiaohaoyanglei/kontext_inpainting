@@ -280,7 +280,136 @@ class ImageDataset(Dataset, CaptionMixin):
                 return final_image
 
 
-
+class WhiteMaskDataset(ImageDataset):
+    """
+    Kontext-inpaint 伪 mask-free 数据集
+    输入：原图RGB(3) + 纯白RGB(3) → 各自VAE编码 → 32通道latent
+    输出：目标图RGB(3)
+    """
+    def __init__(self, config, source_dir=None, target_dir=None, mask_dir=None):
+        # 调用父类初始化，但忽略mask_dir（我们用纯白图替代）
+        super().__init__(config, source_dir, target_dir, None)
+        print_acc("🎭 初始化 WhiteMaskDataset (Kontext-inpaint 伪 mask-free)")
+        print_acc(f"   - 将使用纯白图 RGB(255,255,255) 作为控制信号")
+        print_acc(f"   - 数据流: 原图RGB(3) + 纯白RGB(3) → VAE → 32通道latent")
+    
+    def create_white_image(self, width, height):
+        """创建纯白RGB图像 (255,255,255)"""
+        white_image = Image.new('RGB', (width, height), (255, 255, 255))
+        return white_image
+    
+    def __getitem__(self, index):
+        # 获取文件路径和名称
+        img_path = self.file_list[index % len(self.file_list)]
+        img_name = os.path.splitext(os.path.basename(img_path))[0]
+        
+        try:
+            # 加载原图
+            source_img = Image.open(img_path)
+            source_img = exif_transpose(source_img)
+            if source_img.mode != 'RGB':
+                source_img = source_img.convert('RGB')
+        except Exception as e:
+            print_acc(f"Error opening source image: {img_path}")
+            print_acc(e)
+            return self.__getitem__((index + 1) % len(self.file_list))
+        
+        # 查找对应的target图像
+        target_tensor = None
+        if hasattr(self, 'target_map') and self.target_map and img_name in self.target_map:
+            target_path = self.target_map[img_name]
+            try:
+                target_img = Image.open(target_path)
+                target_img = exif_transpose(target_img)
+                if target_img.mode != 'RGB':
+                    target_img = target_img.convert('RGB')
+                
+                # 预处理target图像
+                min_target_size = min(target_img.size)
+                if self.random_crop:
+                    if self.random_scale and min_target_size > self.resolution:
+                        if min_target_size < self.resolution:
+                            scale_size = self.resolution
+                        else:
+                            scale_size = random.randint(self.resolution, int(min_target_size))
+                        scaler = scale_size / min_target_size
+                        scale_width = int((target_img.width + 5) * scaler)
+                        scale_height = int((target_img.height + 5) * scaler)
+                        target_img = target_img.resize((scale_width, scale_height), Image.BICUBIC)
+                    target_img = transforms.RandomCrop(self.resolution)(target_img)
+                else:
+                    target_img = transforms.CenterCrop(min_target_size)(target_img)
+                    target_img = target_img.resize((self.resolution, self.resolution), Image.BICUBIC)
+                target_tensor = self.transform(target_img)
+            except Exception as e:
+                print_acc(f"Error opening target image: {target_path}")
+                print_acc(e)
+                target_tensor = None
+        
+        # 预处理source图像
+        source_img = source_img.resize((int(source_img.size[0] * self.scale), int(source_img.size[1] * self.scale)), Image.BICUBIC)
+        min_source_size = min(source_img.size)
+        
+        # 创建纯白控制图像（与source图像相同尺寸）
+        white_control_img = self.create_white_image(source_img.width, source_img.height)
+        
+        # 应用相同的裁剪和缩放处理
+        if self.random_crop:
+            if self.random_scale and min_source_size > self.resolution:
+                if min_source_size < self.resolution:
+                    print_acc(f"Unexpected values: min_source_size={min_source_size}, self.resolution={self.resolution}, image file={img_path}")
+                    scale_size = self.resolution
+                else:
+                    scale_size = random.randint(self.resolution, int(min_source_size))
+                scaler = scale_size / min_source_size
+                scale_width = int((source_img.width + 5) * scaler)
+                scale_height = int((source_img.height + 5) * scaler)
+                source_img = source_img.resize((scale_width, scale_height), Image.BICUBIC)
+                white_control_img = white_control_img.resize((scale_width, scale_height), Image.BICUBIC)
+            
+            # 应用相同的随机裁剪
+            crop_transform = transforms.RandomCrop(self.resolution)
+            # 设置相同的随机种子确保裁剪位置一致
+            import torch
+            seed = torch.randint(0, 2**32, (1,)).item()
+            torch.manual_seed(seed)
+            source_img = crop_transform(source_img)
+            torch.manual_seed(seed)
+            white_control_img = crop_transform(white_control_img)
+        else:
+            source_img = transforms.CenterCrop(min_source_size)(source_img)
+            white_control_img = transforms.CenterCrop(min_source_size)(white_control_img)
+            source_img = source_img.resize((self.resolution, self.resolution), Image.BICUBIC)
+            white_control_img = white_control_img.resize((self.resolution, self.resolution), Image.BICUBIC)
+        
+        source_tensor = self.transform(source_img)
+        white_control_tensor = self.transform(white_control_img)
+        
+        # 获取文本提示
+        if self.include_prompt:
+            prompt = self.get_caption_item(index)
+        else:
+            prompt = self.default_prompt
+        
+        # 确定返回的目标图像（优先使用target作为标准答案）
+        final_image = target_tensor if target_tensor is not None else source_tensor
+        
+        # 返回 Kontext-inpaint 格式的数据，兼容现有的数据加载流程
+        # 按照 ai-toolkit 的标准格式返回，确保与 FluxKontextModel 兼容
+        data_item = {
+            'tensor': final_image,              # 目标图像 (训练标签)
+            'caption': prompt,                  # 文本提示
+            'control_tensor': white_control_tensor,  # 纯白控制图像 (作为 control_tensor)
+        }
+        
+        # 兼容性：同时提供旧格式字段
+        data_item.update({
+            'image': final_image,
+            'source_image': source_tensor,
+            'control_image': white_control_tensor,
+        })
+        
+        return data_item
 
 
 class AugmentedImageDataset(ImageDataset):

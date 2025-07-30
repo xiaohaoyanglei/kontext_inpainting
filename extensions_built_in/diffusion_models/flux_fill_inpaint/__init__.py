@@ -1,0 +1,1 @@
+from .flux_fill_inpaint import FluxFillInpaintModel
