@@ -115,7 +115,9 @@ class FluxFillInpaintModel(BaseModel):
         transformer = FluxTransformer2DModel.from_pretrained(
             transformer_path,
             subfolder=transformer_subfolder,
-            torch_dtype=dtype
+            torch_dtype=dtype,
+            low_cpu_mem_usage=False,
+            ignore_mismatched_sizes=True  # 忽略尺寸不匹配
         )
         transformer.to(self.quantize_device, dtype=dtype)
 
