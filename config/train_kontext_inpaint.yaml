@@ -6,14 +6,14 @@ config:
   process:
     - type: 'sd_trainer'
       # 训练输出文件夹
-      training_folder: "/cloud/cloud-ssd1/training_output"
+      training_folder: "/cloud/cloud-ssd1/output"
       device: cuda:0
       
 
       # 保存配置
       save:
         dtype: bf16 # 精度保存
-        save_every: 500 # 每500步保存一次
+        save_every: 1000 # 每1000步保存一次
         max_step_saves_to_keep: 3 # 保留最近3个检查点
         push_to_hub: false
         
@@ -37,7 +37,7 @@ config:
       # 训练配置：两阶段 fine-tune
       train:
         batch_size: 1
-        steps: 3000  # 总训练步数（阶段1：1000步，阶段2：2000步）
+        steps: 5000  # 总训练步数（阶段1：1000步，阶段2：4000步）
         gradient_accumulation_steps: 4  # 梯度累积
         train_unet: true
         train_text_encoder: false  # FLUX不建议训练文本编码器
@@ -76,23 +76,23 @@ config:
           stage2_lr: 5e-5     # 第二阶段学习率
         # low_vram: true  # 如果GPU连接显示器可取消注释
         
+        # 测试图片路径配置（用于采样时的固定原图）
+        test_img_path:
+          - "/cloud/cloud-ssd1/Change her hair color to green..png"           # 对应prompt 1
+          - "/cloud/cloud-ssd1/Remove the table from the living room scene.png" # 对应prompt 2
+        
       # 采样配置
       sample:
         sampler: "flowmatch"  # 必须匹配 train.noise_scheduler
-        sample_every: 500  # 每500步采样一次
+        sample_every: 500  # 每500步采样一次（保持不变）
         width: 512
         height: 512
         prompts:
-          # Kontext-inpaint 的测试提示词
+          # Kontext-inpaint 的测试提示词（对应固定的原图）
           # 注意：--ctrl_img 将被自动设置为纯白图像
-          - "make the person smile"
-          - "change the background to a beach"
-          - "add sunglasses to the person"
-          - "turn this into a cartoon style"
-          - "change the lighting to golden hour"
-          - "add a hat to the person"
-          - "change the person's hair color to blonde"
-          - "make the scene more colorful"
+          # 每个prompt都对应具体的图片，便于观察训练效果变化
+          - "Change her hair color to green"                    # 对应图片1：头发颜色编辑
+          - "Remove the table from the living room scene"       # 对应图片2：物体移除
         neg: ""  # FLUX不使用负提示词
         seed: 42
         walk_seed: true

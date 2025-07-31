@@ -566,6 +566,14 @@ class ModelConfig:
         # kwargs to pass to the model
         self.model_kwargs = kwargs.get("model_kwargs", {})
         
+        # 测试图片路径配置（用于采样时的固定原图）
+        self.test_img_path = kwargs.get("test_img_path", None)
+        if self.test_img_path is not None:
+            if isinstance(self.test_img_path, str):
+                self.test_img_path = self.test_img_path.split(',')
+                self.test_img_path = [p.strip() for p in self.test_img_path]
+                self.test_img_path = [p for p in self.test_img_path if p != '']
+        
         # allow frontend to pass arch with a color like arch:tag
         # but remove the tag
         if self.arch is not None:

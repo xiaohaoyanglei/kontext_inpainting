@@ -253,7 +253,17 @@ class BaseSDTrainProcess(BaseTrainProcess):
         if not self.accelerator.is_main_process:
             return
         flush()
-        sample_folder = os.path.join(self.save_root, 'samples')
+        
+        # 如果是第一次采样，使用samples文件夹
+        # 否则使用对应的模型保存文件夹
+        if is_first:
+            sample_folder = os.path.join(self.save_root, 'samples')
+        else:
+            # 获取当前步骤对应的保存文件夹
+            step_num = str(step).zfill(9) if step is not None else "000000000"
+            sample_folder = os.path.join(self.save_root, f"step_{step_num}")
+            os.makedirs(sample_folder, exist_ok=True)
+        
         gen_img_config_list = []
 
         sample_config = self.first_sample_config if is_first else self.sample_config
@@ -474,8 +484,17 @@ class BaseSDTrainProcess(BaseTrainProcess):
             step_num = f"_{str(step).zfill(9)}"
 
         self.update_training_metadata()
-        filename = f'{self.job.name}{step_num}.safetensors'
-        file_path = os.path.join(self.save_root, filename)
+        
+        # 如果是步骤保存，创建步骤文件夹
+        if step is not None:
+            step_folder = os.path.join(self.save_root, f"step_{str(step).zfill(9)}")
+            os.makedirs(step_folder, exist_ok=True)
+            filename = f'{self.job.name}.safetensors'
+            file_path = os.path.join(step_folder, filename)
+        else:
+            # 初始保存或最终保存
+            filename = f'{self.job.name}{step_num}.safetensors'
+            file_path = os.path.join(self.save_root, filename)
 
         save_meta = copy.deepcopy(self.meta)
         # get extra meta

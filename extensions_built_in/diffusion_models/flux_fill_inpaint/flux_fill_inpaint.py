@@ -160,52 +160,50 @@ class FluxFillInpaintModel(BaseModel):
         vae = AutoencoderKL.from_pretrained(
             base_model_path, subfolder="vae", torch_dtype=dtype)
 
-        # 使用 Kontext 风格的调度器
-        self.noise_scheduler = FluxFillInpaintModel.get_train_scheduler()
-
-        self.print_and_status_update("Making pipeline")
-        # 使用 FluxFillPipeline 而不是 FluxKontextPipeline
-        pipe: FluxFillPipeline = FluxFillPipeline(
-            scheduler=self.noise_scheduler,
-            text_encoder=text_encoder,
-            tokenizer=tokenizer,
-            text_encoder_2=text_encoder_2,
-            tokenizer_2=tokenizer_2,
-            vae=vae,
-            transformer=transformer,
-        )
-
-        self.print_and_status_update("Preparing Model")
-
-        text_encoder = [pipe.text_encoder, pipe.text_encoder_2]
-        tokenizer = [pipe.tokenizer, pipe.tokenizer_2]
-
-        pipe.transformer = pipe.transformer.to(self.device_torch)
-
-        flush()
-        # 确保所有组件在正确设备上
-        text_encoder[0].to(self.device_torch)
-        text_encoder[0].requires_grad_(False)
-        text_encoder[0].eval()
-        text_encoder[1].to(self.device_torch)
-        text_encoder[1].requires_grad_(False)
-        text_encoder[1].eval()
-        pipe.transformer = pipe.transformer.to(self.device_torch)
-        flush()
-
-        # 保存到模型类
+        # 保存到模型类（先保存transformer以便修改）
         self.vae = vae
-        self.text_encoder = text_encoder
-        self.tokenizer = tokenizer
-        self.model = pipe.transformer
-        self.pipeline = pipe
+        self.text_encoder = [text_encoder, text_encoder_2]
+        self.tokenizer = [tokenizer, tokenizer_2]
+        self.model = transformer
         
-        # 应用 Kontext-inpaint 修改
+        # 应用 Kontext-inpaint 修改（在创建pipeline之前）
         if self.kontext_inpaint_mode and self.init_projection_from_original:
             self._init_kontext_inpaint_projection()
             
         if self.two_stage_training:
             self._setup_two_stage_training()
+
+        # 使用 Kontext 风格的调度器
+        self.noise_scheduler = FluxFillInpaintModel.get_train_scheduler()
+
+        self.print_and_status_update("Making pipeline")
+        # 使用修改后的transformer创建pipeline
+        pipe: FluxFillPipeline = FluxFillPipeline(
+            scheduler=self.noise_scheduler,
+            text_encoder=self.text_encoder[0],
+            tokenizer=self.tokenizer[0],
+            text_encoder_2=self.text_encoder[1],
+            tokenizer_2=self.tokenizer[1],
+            vae=vae,
+            transformer=self.model,  # 使用修改后的transformer
+        )
+
+        self.print_and_status_update("Preparing Model")
+
+        pipe.transformer = pipe.transformer.to(self.device_torch)
+
+        flush()
+        # 确保所有组件在正确设备上
+        self.text_encoder[0].to(self.device_torch)
+        self.text_encoder[0].requires_grad_(False)
+        self.text_encoder[0].eval()
+        self.text_encoder[1].to(self.device_torch)
+        self.text_encoder[1].requires_grad_(False)
+        self.text_encoder[1].eval()
+        pipe.transformer = pipe.transformer.to(self.device_torch)
+        flush()
+
+        self.pipeline = pipe
             
         self.print_and_status_update("FLUX.1-Fill Kontext-inpaint Model Loaded")
 
@@ -339,6 +337,57 @@ class FluxFillInpaintModel(BaseModel):
 
     def get_base_model_version(self):
         return "flux.1_fill_inpaint"
+    
+    def save(self, output_file, meta, save_dtype):
+        """保存FLUX模型"""
+        import os
+        import yaml
+        import torch
+        
+        # 创建保存目录
+        os.makedirs(os.path.dirname(output_file), exist_ok=True)
+        
+        # 清理tokenizer中的不可序列化对象
+        pipeline = unwrap_model(self.pipeline)
+        if hasattr(pipeline, 'tokenizer') and pipeline.tokenizer is not None:
+            # 移除tokenizer中的dtype对象
+            if hasattr(pipeline.tokenizer, 'init_kwargs'):
+                cleaned_kwargs = {}
+                for key, value in pipeline.tokenizer.init_kwargs.items():
+                    if not isinstance(value, torch.dtype):
+                        cleaned_kwargs[key] = value
+                pipeline.tokenizer.init_kwargs = cleaned_kwargs
+        
+        if hasattr(pipeline, 'tokenizer_2') and pipeline.tokenizer_2 is not None:
+            # 移除tokenizer_2中的dtype对象
+            if hasattr(pipeline.tokenizer_2, 'init_kwargs'):
+                cleaned_kwargs = {}
+                for key, value in pipeline.tokenizer_2.init_kwargs.items():
+                    if not isinstance(value, torch.dtype):
+                        cleaned_kwargs[key] = value
+                pipeline.tokenizer_2.init_kwargs = cleaned_kwargs
+        
+        # 保存pipeline
+        pipeline.save_pretrained(
+            save_directory=os.path.dirname(output_file),
+            safe_serialization=True,
+        )
+        
+        # 确保training_info是字典格式，而不是JSON字符串
+        if 'training_info' in meta and isinstance(meta['training_info'], str):
+            import json
+            try:
+                meta['training_info'] = json.loads(meta['training_info'])
+            except:
+                pass
+        
+        # 保存元数据
+        meta_path = os.path.join(os.path.dirname(output_file), 'aitk_meta.yaml')
+        with open(meta_path, 'w') as f:
+            yaml.dump(meta, f)
+        
+        print(f"Saved FLUX model to {output_file}")
+
 
     # 以下方法继承 BaseModel 的默认实现，但使用 Fill 的逻辑
     def get_generation_pipeline(self):
@@ -399,47 +448,185 @@ class FluxFillInpaintModel(BaseModel):
         gen_config.height = int(gen_config.height // 16 * 16)
         
         try:
-            # 创建白色源图像和白色mask作为测试输入
-            white_source = Image.new('RGB', (gen_config.width, gen_config.height), (255, 255, 255))
-            white_mask = Image.new('RGB', (gen_config.width, gen_config.height), (255, 255, 255))
+            # 从数据集获取真实的source图像
+            from PIL import Image, ImageDraw, ImageFont
+            import os
+            import random
+            import torch
+            import torch.nn.functional as F
+            import numpy as np
+            
+            # 使用固定的测试图片路径（如果配置了的话）
+            test_img_paths = getattr(self.model_config, 'test_img_path', None)
+            
+            if test_img_paths and len(test_img_paths) > 0:
+                # 从gen_config中获取prompt索引
+                prompt_index = getattr(gen_config, '_prompt_index', 0)
+                
+                # 根据prompt内容来确定使用哪张图片
+                if "hair color" in gen_config.prompt.lower():
+                    # 头发颜色编辑使用第一张图片
+                    source_image_path = test_img_paths[0]
+                elif "table" in gen_config.prompt.lower() or "living room" in gen_config.prompt.lower():
+                    # 客厅桌子移除使用第二张图片
+                    source_image_path = test_img_paths[1]
+                else:
+                    # 默认使用第一张图片
+                    source_image_path = test_img_paths[0]
+                
+                if os.path.exists(source_image_path):
+                    source_image = Image.open(source_image_path).convert('RGB')
+                    # 调整到目标尺寸
+                    source_image = source_image.resize((gen_config.width, gen_config.height), Image.LANCZOS)
+                else:
+                    print(f"Warning: Test image path not found: {source_image_path}")
+                    source_image = Image.new('RGB', (gen_config.width, gen_config.height), (128, 128, 128))
+            else:
+                # 如果没有配置测试图片路径，使用默认逻辑
+                dataset_path = "/cloud/cloud-ssd1/my_dataset/source_images"
+                
+                # 固定选择图片用于采样（基于seed确保一致性）
+                if os.path.exists(dataset_path):
+                    image_files = [f for f in os.listdir(dataset_path) 
+                                  if f.lower().endswith(('.png', '.jpg', '.jpeg'))]
+                    if image_files:
+                        # 使用generator的seed来固定选择图片
+                        import hashlib
+                        seed_hash = hashlib.md5(str(generator.initial_seed()).encode()).hexdigest()
+                        seed_int = int(seed_hash[:8], 16)
+                        
+                        # 根据当前prompt的索引选择对应的图片
+                        prompt_index = getattr(gen_config, '_prompt_index', 0)
+                        if prompt_index == 0:
+                            # 如果没有设置索引，尝试从文件名或其他方式推断
+                            prompt_hash = hash(gen_config.prompt) % len(image_files)
+                            selected_index = (seed_int + prompt_hash) % len(image_files)
+                        else:
+                            selected_index = (seed_int + prompt_index) % len(image_files)
+                        selected_image = image_files[selected_index]
+                        
+                        source_image_path = os.path.join(dataset_path, selected_image)
+                        source_image = Image.open(source_image_path).convert('RGB')
+                        # 调整到目标尺寸
+                        source_image = source_image.resize((gen_config.width, gen_config.height), Image.LANCZOS)
+                    else:
+                        # 如果没有图像文件，使用默认图像
+                        source_image = Image.new('RGB', (gen_config.width, gen_config.height), (128, 128, 128))
+                else:
+                    # 如果数据集路径不存在，使用默认图像
+                    source_image = Image.new('RGB', (gen_config.width, gen_config.height), (128, 128, 128))
             
             # 确保 generator 在正确的设备上
             if generator.device.type != self.device_torch.type:
                 generator = torch.Generator(device=self.device_torch).manual_seed(generator.initial_seed())
             
-            # 使用FluxFill pipeline进行推理
+            # 绕过FluxFillPipeline，直接使用我们的32通道逻辑
             with torch.no_grad():
-                result = pipeline(
-                    prompt=gen_config.prompt,
-                    image=white_source,
-                    mask_image=white_mask,
-                    num_inference_steps=getattr(gen_config, 'sample_steps', 20),
-                    guidance_scale=gen_config.guidance_scale,
-                    generator=generator,
-                    height=gen_config.height,
-                    width=gen_config.width,
+                # 1. 编码源图像
+                from torchvision import transforms
+                transform = transforms.Compose([
+                    transforms.ToTensor(),
+                    transforms.Normalize([0.5], [0.5])
+                ])
+                source_tensor = transform(source_image).unsqueeze(0).to(self.device_torch, dtype=self.torch_dtype)
+                
+                # 2. VAE编码
+                self.vae.to(self.device_torch, dtype=self.torch_dtype)
+                source_latent = self.vae.encode(source_tensor).latent_dist.sample()
+                
+                # 3. 创建白色控制latent
+                white_control_latent = torch.ones_like(source_latent) * 0.5  # 白色在latent空间的近似值
+                
+                # 4. 拼接为32通道
+                combined_latent = torch.cat([source_latent, white_control_latent], dim=1)
+                
+                # 5. 简单的单步去噪（用于快速采样）
+                timestep = torch.tensor([0.5], device=self.device_torch, dtype=self.torch_dtype)
+                
+                # 6. 编码提示词
+                conditional_embeds = self.get_prompt_embeds(gen_config.prompt)
+                
+                # 7. 使用我们的32通道噪声预测
+                noise_pred = self.get_noise_prediction(
+                    latent_model_input=combined_latent,
+                    timestep=timestep,
+                    text_embeddings=conditional_embeds,
+                    guidance_embedding_scale=gen_config.guidance_scale,
+                    bypass_guidance_embedding=False
                 )
                 
-                return result.images[0]
+                # 8. 简单去噪
+                denoised_latent = combined_latent[:, :16] - noise_pred * 0.5  # 只取前16通道
+                
+                # 9. VAE解码
+                decoded = self.vae.decode(denoised_latent).sample
+                
+                # 10. 转换为PIL图像
+                decoded = (decoded / 2 + 0.5).clamp(0, 1)
+                decoded = decoded.cpu().permute(0, 2, 3, 1).float().numpy()[0]
+                decoded = np.clip(decoded * 255, 0, 255).astype(np.uint8)
+                
+                result_image = Image.fromarray(decoded)
+                
+                # 11. 创建对比图：原图在左，结果在右
+                # 调整尺寸为正方形，便于对比
+                display_size = (512, 512)
+                source_display = source_image.resize(display_size, Image.LANCZOS)
+                result_display = result_image.resize(display_size, Image.LANCZOS)
+                
+                # 创建对比图（原图 + 结果）
+                comparison_width = display_size[0] * 2
+                comparison_height = display_size[1] + 60  # 额外空间放prompt
+                comparison_img = Image.new('RGB', (comparison_width, comparison_height), (240, 240, 240))
+                
+                # 粘贴原图和结果图
+                comparison_img.paste(source_display, (0, 30))
+                comparison_img.paste(result_display, (display_size[0], 30))
+                
+                # 添加标签
+                draw = ImageDraw.Draw(comparison_img)
+                try:
+                    # 尝试使用系统字体
+                    font = ImageFont.load_default()
+                    font_large = ImageFont.load_default()
+                except:
+                    # 如果字体加载失败，使用默认
+                    font = None
+                    font_large = None
+                
+                # 添加标题
+                draw.text((10, 5), "Original", fill=(0, 0, 0), font=font)
+                draw.text((display_size[0] + 10, 5), "Result", fill=(0, 0, 0), font=font)
+                
+                # 添加prompt（在底部）
+                prompt_text = f"Prompt: {gen_config.prompt[:50]}{'...' if len(gen_config.prompt) > 50 else ''}"
+                draw.text((10, comparison_height - 25), prompt_text, fill=(100, 100, 100), font=font)
+                
+                # 添加分隔线
+                draw.line([(display_size[0], 0), (display_size[0], comparison_height)], fill=(200, 200, 200), width=2)
+                
+                return comparison_img
                 
         except Exception as e:
-            print(f"⚠️ Pipeline推理失败，回退到简单生成: {e}")
-            # 如果pipeline失败，生成一个简单的测试图像
+            print(f"⚠️ 采样失败，详细错误: {e}")
+            import traceback
+            traceback.print_exc()
+            
+            # 生成一个简单的测试图像
             from PIL import Image, ImageDraw, ImageFont
             
             img = Image.new('RGB', (gen_config.width, gen_config.height), (240, 240, 240))
             draw = ImageDraw.Draw(img)
             
-            # 绘制一些测试文本
+            # 绘制错误信息
             try:
-                # 尝试使用系统字体
                 font = ImageFont.load_default()
-                text = f"Test Sample\n{gen_config.prompt[:30]}..."
-                draw.text((10, 10), text, fill=(100, 100, 100), font=font)
+                text = f"采样失败\n{gen_config.prompt[:30]}...\n错误: {str(e)[:50]}"
+                draw.text((10, 10), text, fill=(255, 0, 0), font=font)
             except:
                 # 如果字体加载失败，就画一个简单的矩形
                 draw.rectangle([50, 50, gen_config.width-50, gen_config.height-50], 
-                             outline=(100, 100, 100), width=2)
+                             outline=(255, 0, 0), width=2)
             
             return img
 
