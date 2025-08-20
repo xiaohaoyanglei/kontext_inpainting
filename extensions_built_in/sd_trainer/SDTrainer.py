@@ -36,6 +36,7 @@ from toolkit.train_tools import precondition_model_outputs_flow_match
 from toolkit.models.diffusion_feature_extraction import DiffusionFeatureExtractor, load_dfe
 from toolkit.util.wavelet_loss import wavelet_loss
 import torch.nn.functional as F
+import psutil
 
 
 def flush():
@@ -98,6 +99,10 @@ class SDTrainer(BaseSDTrainProcess):
         
         # store the loss target for a batch so we can use it in a loss
         self._guidance_loss_target_batch: float = 0.0
+        
+        # 显存监控相关
+        self.memory_monitor_interval = 100  # 每100步打印一次显存信息
+        self.last_memory_print_step = 0
         if isinstance(self.train_config.guidance_loss_target, (int, float)):
             self._guidance_loss_target_batch = float(self.train_config.guidance_loss_target)
         elif isinstance(self.train_config.guidance_loss_target, list):
@@ -1855,6 +1860,12 @@ class SDTrainer(BaseSDTrainProcess):
             with self.timer('restore_adapter'):
                 # Let's make sure we don't update any embedding weights besides the newly added token
                 self.adapter.restore_embeddings()
+
+        # 调用两阶段训练更新（如果模型支持）
+        if hasattr(self.sd, 'update_training_stage'):
+            stage_changed = self.sd.update_training_stage(self.step_num)
+            if stage_changed:
+                print_acc(f"🔄 训练阶段切换完成 (步数: {self.step_num})")
 
         loss_dict = OrderedDict(
             {'loss': loss.item()}

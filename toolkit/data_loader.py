@@ -391,8 +391,10 @@ class WhiteMaskDataset(ImageDataset):
         else:
             prompt = self.default_prompt
         
-        # 确定返回的目标图像（优先使用target作为标准答案）
-        final_image = target_tensor if target_tensor is not None else source_tensor
+        # 确定返回的目标图像（必须使用target作为标准答案）
+        if target_tensor is None:
+            raise ValueError(f"Missing target image for source: {img_name}.png. 请确保 target_images 中存在同名配对文件。")
+        final_image = target_tensor
         
         # 返回 Kontext-inpaint 格式的数据，兼容现有的数据加载流程
         # 按照 ai-toolkit 的标准格式返回，确保与 FluxKontextModel 兼容

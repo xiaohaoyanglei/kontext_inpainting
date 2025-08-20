@@ -48,22 +48,29 @@ def preprocess_config(config: OrderedDict, name: str = None):
     if name is None:
         name = config["config"]["name"]
     
-    # 处理 Kontext-inpaint 的时间戳输出文件夹
-    if (config.get("job") == "extension" and 
-        "process" in config["config"] and 
-        len(config["config"]["process"]) > 0 and
-        "training_folder" in config["config"]["process"][0]):
-        
-        training_folder = config["config"]["process"][0]["training_folder"]
-        
-        # 如果是 training_output 路径，添加时间戳
-        if training_folder == "/cloud/cloud-ssd1/training_output":
-            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-            new_training_folder = f"/cloud/cloud-ssd1/training_output_{timestamp}"
-            
-            # 更新配置
-            config["config"]["process"][0]["training_folder"] = new_training_folder
-            print(f"📁 输出文件夹: {new_training_folder}")
+    # 处理输出文件夹时间戳：
+    # 1) 如果顶层 config.training_folder 指向固定目录，则统一改为带时间戳
+    # 2) 兼容部分流程把 training_folder 放在 process[0] 的情况
+    # 说明：不再限制 job 类型，train/extension 都生效
+    try:
+        if "training_folder" in config["config"]:
+            training_folder_top = config["config"]["training_folder"]
+            if training_folder_top == "/cloud/cloud-ssd1/training_output":
+                timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+                new_training_folder = f"/cloud/cloud-ssd1/training_output_{timestamp}"
+                config["config"]["training_folder"] = new_training_folder
+                print(f"📁 输出文件夹: {new_training_folder}")
+        elif ("process" in config["config"] and 
+              len(config["config"]["process"]) > 0 and
+              "training_folder" in config["config"]["process"][0]):
+            training_folder_proc = config["config"]["process"][0]["training_folder"]
+            if training_folder_proc == "/cloud/cloud-ssd1/training_output":
+                timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+                new_training_folder = f"/cloud/cloud-ssd1/training_output_{timestamp}"
+                config["config"]["process"][0]["training_folder"] = new_training_folder
+                print(f"📁 输出文件夹: {new_training_folder}")
+    except Exception:
+        pass
     
     config_string = json.dumps(config)
     config_string = config_string.replace("[name]", name)

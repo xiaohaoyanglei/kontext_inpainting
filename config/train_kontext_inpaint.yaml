@@ -1,113 +1,38 @@
----
-job: extension
+# Kontext-inpaint 伪 mask-free 训练配置
+
+job: train
+
 config:
-  # 基于 FLUX.1-Fill 的 Kontext-inpaint 伪 mask-free 全模型 fine-tune 配置
-  name: "flux_fill_kontext_inpaint_v1"
+  name: flux-fill-kontext-inpaint-v1
+  training_folder: "/cloud/cloud-ssd1/training_output"
+
   process:
-    - type: 'sd_trainer'
-      # 训练输出文件夹
-      training_folder: "/cloud/cloud-ssd1/output"
-      device: cuda:0
+    - type: finetune
+      # 模型路径配置
+      vae_path: "/cloud/cloud-ssd1/FLUX.1-Fill-dev/vae"
+      model_path: "/cloud/cloud-ssd1/FLUX.1-Fill-dev/transformer"
+      text_encoder_path: "/cloud/cloud-ssd1/FLUX.1-Fill-dev/text_encoder"
+      text_encoder_2_path: "/cloud/cloud-ssd1/FLUX.1-Fill-dev/text_encoder_2"
       
-
-      # 保存配置
-      save:
-        dtype: bf16 # 精度保存
-        save_every: 1000 # 每1000步保存一次
-        max_step_saves_to_keep: 3 # 保留最近3个检查点
-        push_to_hub: false
-        
-      # 数据集配置：使用 WhiteMaskDataset
-      datasets:
-        # 注意：这里使用自定义的 WhiteMaskDataset
-        # 它会自动生成纯白控制图像，无需手动提供mask
-        - folder_path: "/cloud/cloud-ssd1/my_dataset/source_images"  # 原图路径
-          # 目标图像路径（编辑后的结果）
-          target_path: "/cloud/cloud-ssd1/my_dataset/target_images"
-          # 不需要 mask_path，WhiteMaskDataset 会自动生成纯白控制图
-          caption_ext: "txt"
-          caption_dropout_rate: 0.05  # 5% 概率丢弃caption
-          cache_latents_to_disk: true  # 缓存latent到磁盘
-          shuffle_tokens: false
-          # Kontext 在2x latent尺寸运行，512分辨率较为安全
-          resolution: 512
-          # 使用我们新创建的 WhiteMaskDataset
-          dataset_class: "WhiteMaskDataset"
-          
-      # 训练配置：两阶段 fine-tune
-      train:
-        batch_size: 1
-        steps: 5000  # 总训练步数（阶段1：1000步，阶段2：4000步）
-        gradient_accumulation_steps: 4  # 梯度累积
-        train_unet: true
-        train_text_encoder: false  # FLUX不建议训练文本编码器
-        gradient_checkpointing: true  # 节省显存
-        noise_scheduler: "flowmatch" # 使用 Flow Matching
-        optimizer: "adamw8bit"
-        lr: 1e-4  # 第一阶段学习率（只训练projection层）
-        timestep_type: "flux_shift"  # FLUX专用时间步
-        dtype: bf16  # 混合精度训练
-        
-        # 两阶段训练配置
-        two_stage_training: true
-        stage1_steps: 1000  # 第一阶段：只训练 projection 层
-        stage1_lr: 1e-4     # 第一阶段学习率
-        stage2_lr: 5e-5     # 第二阶段学习率（全模型微调）
-        
-        # EMA配置（可选）
-        ema_config:
-          use_ema: false
-          ema_decay: 0.99
-          
-      # 模型配置：基于本地 FLUX.1-Fill-dev 全模型 fine-tune
-      model:
-        # 使用本地 FLUX.1-Fill-dev 作为基础模型
-        name_or_path: "/cloud/cloud-ssd1/FLUX.1-Fill-dev"
-        arch: "flux_fill_inpaint"  # 基于 FLUX.1-Fill 的 inpaint 架构
-        quantize: false  # 全模型微调时不量化
-        
-        # Kontext-inpaint 特定配置
-        model_kwargs:
-          kontext_inpaint_mode: true  # 启用伪 mask-free 模式
-          init_projection_from_original: true  # 从原始16→hidden投影初始化32→hidden投影
-          two_stage_training: true  # 启用两阶段训练
-          stage1_steps: 1000  # 第一阶段步数
-          stage1_lr: 1e-4     # 第一阶段学习率
-          stage2_lr: 5e-5     # 第二阶段学习率
-        # low_vram: true  # 如果GPU连接显示器可取消注释
-        
-        # 测试图片路径配置（用于采样时的固定原图）
-        test_img_path:
-          - "/cloud/cloud-ssd1/Change her hair color to green..png"           # 对应prompt 1
-          - "/cloud/cloud-ssd1/Remove the table from the living room scene.png" # 对应prompt 2
-        
-      # 采样配置
-      sample:
-        sampler: "flowmatch"  # 必须匹配 train.noise_scheduler
-        sample_every: 500  # 每500步采样一次（保持不变）
-        width: 512
-        height: 512
-        prompts:
-          # Kontext-inpaint 的测试提示词（对应固定的原图）
-          # 注意：--ctrl_img 将被自动设置为纯白图像
-          # 每个prompt都对应具体的图片，便于观察训练效果变化
-          - "Change her hair color to green"                    # 对应图片1：头发颜色编辑
-          - "Remove the table from the living room scene"       # 对应图片2：物体移除
-        neg: ""  # FLUX不使用负提示词
-        seed: 42
-        walk_seed: true
-        guidance_scale: 4.0
-        sample_steps: 20
-
-# 元信息
-meta:
-  name: "Kontext-inpaint v1"
-  version: '1.0'
-  description: "伪 mask-free 的 Kontext-inpaint 模型，基于纯白控制图像的多轮编辑"
-  author: "Kontext-inpaint Team"
-  notes: |
-    此配置实现了伪 mask-free 的 inpainting 模型：
-    - 输入：原图RGB(3) + 纯白RGB(3) → VAE编码 → 32通道latent
-    - 输出：编辑后的RGB(3)图像
-    - 保持 Kontext 的多轮一致性能力
-    - 为 SeedVR2 风格扩展预留接口
+      # 数据集路径配置
+      source_image_dir: "/cloud/cloud-ssd1/new_dataset/source_images"
+      target_image_dir: "/cloud/cloud-ssd1/new_dataset/target_images"
+      # 注意：不使用mask_dir，因为WhiteMaskDataset会自动生成纯白控制图
+      
+      # 训练超参数
+      resolution: 256  # 降低分辨率要求，适应小尺寸图片
+      batch_size: 1
+      num_epochs: 1
+      lr: 1e-4
+      steps: 10000
+      
+      # 两阶段训练配置
+      two_stage_training: true
+      stage1_steps: 2000
+      stage1_lr: 1e-4
+      stage2_lr: 5e-5
+      
+      device: "cuda"
+      
+      # 显存优化
+      gradient_accumulation_steps: 4

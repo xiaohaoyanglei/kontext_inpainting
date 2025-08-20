@@ -2,6 +2,7 @@ import os
 import torch
 import torch.nn as nn
 from typing import TYPE_CHECKING
+import yaml
 
 from toolkit.config_modules import ModelConfig
 from toolkit.print import print_acc
@@ -115,9 +116,7 @@ class FluxFillInpaintModel(BaseModel):
         transformer = FluxTransformer2DModel.from_pretrained(
             transformer_path,
             subfolder=transformer_subfolder,
-            torch_dtype=dtype,
-            low_cpu_mem_usage=False,
-            ignore_mismatched_sizes=True  # 忽略尺寸不匹配
+            torch_dtype=dtype
         )
         transformer.to(self.quantize_device, dtype=dtype)
 
@@ -136,7 +135,7 @@ class FluxFillInpaintModel(BaseModel):
         # 加载文本编码器（使用 FLUX.1-Fill 的配置）
         self.print_and_status_update("Loading T5")
         tokenizer_2 = T5TokenizerFast.from_pretrained(
-            base_model_path, subfolder="tokenizer_2", torch_dtype=dtype
+            base_model_path, subfolder="tokenizer_2"  # 移除 torch_dtype 参数
         )
         text_encoder_2 = T5EncoderModel.from_pretrained(
             base_model_path, subfolder="text_encoder_2", torch_dtype=dtype
@@ -155,7 +154,8 @@ class FluxFillInpaintModel(BaseModel):
         text_encoder = CLIPTextModel.from_pretrained(
             base_model_path, subfolder="text_encoder", torch_dtype=dtype)
         tokenizer = CLIPTokenizer.from_pretrained(
-            base_model_path, subfolder="tokenizer", torch_dtype=dtype)
+            base_model_path, subfolder="tokenizer"  # 移除 torch_dtype 参数
+        )
         text_encoder.to(self.device_torch, dtype=dtype)
 
         self.print_and_status_update("Loading VAE")
@@ -206,8 +206,55 @@ class FluxFillInpaintModel(BaseModel):
         flush()
 
         self.pipeline = pipe
+        
+        # 保存pipeline引用以便后续使用
+        self._pipe = pipe
             
         self.print_and_status_update("FLUX.1-Fill Kontext-inpaint Model Loaded")
+    
+    def save_model(self, output_path, meta, save_dtype):
+        """自定义保存方法，避免JSON序列化问题"""
+        # 只保存transformer，避免pipeline配置问题
+        if hasattr(self, 'model') and self.model is not None:
+            self.model.save_pretrained(
+                save_directory=os.path.join(output_path, 'transformer'),
+                safe_serialization=True,
+            )
+        
+        # 保存VAE
+        if hasattr(self, 'vae') and self.vae is not None:
+            self.vae.save_pretrained(
+                save_directory=os.path.join(output_path, 'vae'),
+                safe_serialization=True,
+            )
+        
+        # 保存文本编码器
+        if hasattr(self, 'text_encoder') and self.text_encoder is not None:
+            for i, te in enumerate(self.text_encoder):
+                if te is not None:
+                    te.save_pretrained(
+                        save_directory=os.path.join(output_path, f'text_encoder_{i}'),
+                        safe_serialization=True,
+                    )
+        
+        # 保存tokenizer（跳过有问题的tokenizer）
+        if hasattr(self, 'tokenizer') and self.tokenizer is not None:
+            for i, tokenizer in enumerate(self.tokenizer):
+                if tokenizer is not None:
+                    try:
+                        # 尝试保存tokenizer
+                        tokenizer.save_pretrained(
+                            save_directory=os.path.join(output_path, f'tokenizer_{i}'),
+                        )
+                    except Exception as e:
+                        print(f"⚠️ 跳过保存tokenizer_{i}: {e}")
+                        # 如果保存失败，跳过这个tokenizer
+                        continue
+        
+        # 保存元配置
+        meta_path = os.path.join(output_path, 'aitk_meta.yaml')
+        with open(meta_path, 'w') as f:
+            yaml.dump(meta, f)
 
     def _init_kontext_inpaint_projection(self):
         """
@@ -339,57 +386,6 @@ class FluxFillInpaintModel(BaseModel):
 
     def get_base_model_version(self):
         return "flux.1_fill_inpaint"
-    
-    def save(self, output_file, meta, save_dtype):
-        """保存FLUX模型"""
-        import os
-        import yaml
-        import torch
-        
-        # 创建保存目录
-        os.makedirs(os.path.dirname(output_file), exist_ok=True)
-        
-        # 清理tokenizer中的不可序列化对象
-        pipeline = unwrap_model(self.pipeline)
-        if hasattr(pipeline, 'tokenizer') and pipeline.tokenizer is not None:
-            # 移除tokenizer中的dtype对象
-            if hasattr(pipeline.tokenizer, 'init_kwargs'):
-                cleaned_kwargs = {}
-                for key, value in pipeline.tokenizer.init_kwargs.items():
-                    if not isinstance(value, torch.dtype):
-                        cleaned_kwargs[key] = value
-                pipeline.tokenizer.init_kwargs = cleaned_kwargs
-        
-        if hasattr(pipeline, 'tokenizer_2') and pipeline.tokenizer_2 is not None:
-            # 移除tokenizer_2中的dtype对象
-            if hasattr(pipeline.tokenizer_2, 'init_kwargs'):
-                cleaned_kwargs = {}
-                for key, value in pipeline.tokenizer_2.init_kwargs.items():
-                    if not isinstance(value, torch.dtype):
-                        cleaned_kwargs[key] = value
-                pipeline.tokenizer_2.init_kwargs = cleaned_kwargs
-        
-        # 保存pipeline
-        pipeline.save_pretrained(
-            save_directory=os.path.dirname(output_file),
-            safe_serialization=True,
-        )
-        
-        # 确保training_info是字典格式，而不是JSON字符串
-        if 'training_info' in meta and isinstance(meta['training_info'], str):
-            import json
-            try:
-                meta['training_info'] = json.loads(meta['training_info'])
-            except:
-                pass
-        
-        # 保存元数据
-        meta_path = os.path.join(os.path.dirname(output_file), 'aitk_meta.yaml')
-        with open(meta_path, 'w') as f:
-            yaml.dump(meta, f)
-        
-        print(f"Saved FLUX model to {output_file}")
-
 
     # 以下方法继承 BaseModel 的默认实现，但使用 Fill 的逻辑
     def get_generation_pipeline(self):
@@ -458,65 +454,16 @@ class FluxFillInpaintModel(BaseModel):
             import torch.nn.functional as F
             import numpy as np
             
-            # 使用固定的测试图片路径（如果配置了的话）
-            test_img_paths = getattr(self.model_config, 'test_img_path', None)
+            # 使用固定的测试图片进行采样
+            test_image_path = "/cloud/cloud-ssd1/test.png"
             
-            if test_img_paths and len(test_img_paths) > 0:
-                # 从gen_config中获取prompt索引
-                prompt_index = getattr(gen_config, '_prompt_index', 0)
-                
-                # 根据prompt内容来确定使用哪张图片
-                if "hair color" in gen_config.prompt.lower():
-                    # 头发颜色编辑使用第一张图片
-                    source_image_path = test_img_paths[0]
-                elif "table" in gen_config.prompt.lower() or "living room" in gen_config.prompt.lower():
-                    # 客厅桌子移除使用第二张图片
-                    source_image_path = test_img_paths[1]
-                else:
-                    # 默认使用第一张图片
-                    source_image_path = test_img_paths[0]
-                
-                if os.path.exists(source_image_path):
-                    source_image = Image.open(source_image_path).convert('RGB')
-                    # 调整到目标尺寸
-                    source_image = source_image.resize((gen_config.width, gen_config.height), Image.LANCZOS)
-                else:
-                    print(f"Warning: Test image path not found: {source_image_path}")
-                    source_image = Image.new('RGB', (gen_config.width, gen_config.height), (128, 128, 128))
+            if os.path.exists(test_image_path):
+                source_image = Image.open(test_image_path).convert('RGB')
+                # 调整到目标尺寸
+                source_image = source_image.resize((gen_config.width, gen_config.height), Image.LANCZOS)
             else:
-                # 如果没有配置测试图片路径，使用默认逻辑
-                dataset_path = "/cloud/cloud-ssd1/my_dataset/source_images"
-                
-                # 固定选择图片用于采样（基于seed确保一致性）
-                if os.path.exists(dataset_path):
-                    image_files = [f for f in os.listdir(dataset_path) 
-                                  if f.lower().endswith(('.png', '.jpg', '.jpeg'))]
-                    if image_files:
-                        # 使用generator的seed来固定选择图片
-                        import hashlib
-                        seed_hash = hashlib.md5(str(generator.initial_seed()).encode()).hexdigest()
-                        seed_int = int(seed_hash[:8], 16)
-                        
-                        # 根据当前prompt的索引选择对应的图片
-                        prompt_index = getattr(gen_config, '_prompt_index', 0)
-                        if prompt_index == 0:
-                            # 如果没有设置索引，尝试从文件名或其他方式推断
-                            prompt_hash = hash(gen_config.prompt) % len(image_files)
-                            selected_index = (seed_int + prompt_hash) % len(image_files)
-                        else:
-                            selected_index = (seed_int + prompt_index) % len(image_files)
-                        selected_image = image_files[selected_index]
-                        
-                        source_image_path = os.path.join(dataset_path, selected_image)
-                        source_image = Image.open(source_image_path).convert('RGB')
-                        # 调整到目标尺寸
-                        source_image = source_image.resize((gen_config.width, gen_config.height), Image.LANCZOS)
-                    else:
-                        # 如果没有图像文件，使用默认图像
-                        source_image = Image.new('RGB', (gen_config.width, gen_config.height), (128, 128, 128))
-                else:
-                    # 如果数据集路径不存在，使用默认图像
-                    source_image = Image.new('RGB', (gen_config.width, gen_config.height), (128, 128, 128))
+                # 如果测试图片不存在，使用默认图像
+                source_image = Image.new('RGB', (gen_config.width, gen_config.height), (128, 128, 128))
             
             # 确保 generator 在正确的设备上
             if generator.device.type != self.device_torch.type:
