@@ -1,6 +1,6 @@
 # Kontext-inpaint: 伪 Mask-free 多轮编辑模型
 
-## 🎯 项目目标
+## 项目目标
 
 基于现有的 **FLUX.1-Fill-dev** 完整权重，结合 **Kontext 架构思想**（Flow-Matching + RoPE），实现"伪 mask-free"原型模型：
 
@@ -11,7 +11,7 @@
 
 ---
 
-## 🏗️ 架构设计
+## 架构设计
 
 ### 数据流设计
 ```
@@ -27,7 +27,7 @@
 
 ---
 
-## 🚀 快速开始
+## 快速开始
 
 ### 1. 环境准备
 ```bash
@@ -76,15 +76,16 @@ python /cloud/cloud-ssd1/kontext_inpainting/run.py /cloud/cloud-ssd1/kontext_inp
   - 阶段1：仅训练 `x_embedder`（32→hidden 投影层），步数由 `stage1_steps` 控制；
   - 阶段2：解冻全模型继续 fine-tune，学习率切换为 `stage2_lr`。
 
-### 4. 推理
+### 4. 推理（单次）
 
-#### 单次编辑
+标准 diffusers 目录（含 model_index.json）：
 ```bash
-python inference_kontext_inpaint.py \
-    --model_path "/path/to/trained/model" \
-    --source_image "test_image.jpg" \
-    --prompt "make the person smile" \
-    --output "result.png"
+python /cloud/cloud-ssd1/kontext_inpainting/inference_kontext_inpaint.py \
+  --model_path "/path/to/diffusers_model_folder" \
+  --source_image "/cloud/cloud-ssd1/test.png" \
+  --prompt "add furniture" \
+  --output "/cloud/cloud-ssd1/training_output_YYYYMMDD_HHMMSS/infer_add_furniture.png" \
+  --steps 30 --guidance 6.0 --seed 42 --size 512
 ```
 
 使用 checkpoint 目录（无 model_index.json）的完整推理命令（与训练保持一致的数据流；本项目数据集统一提示词为“add furniture”）：
@@ -98,19 +99,9 @@ python /cloud/cloud-ssd1/kontext_inpainting/inference_kontext_inpaint.py \
   --steps 30 --guidance 6.0 --seed 42 --size 512
 ```
 
-#### 多轮编辑
-```bash
-python inference_kontext_inpaint.py \
-    --model_path "/path/to/trained/model" \
-    --source_image "test_image.jpg" \
-    --multi_round \
-    --prompts_file "example_multi_round_prompts.txt" \
-    --output_dir "multi_round_results/"
-```
-
 ---
 
-## 📋 核心组件
+## 核心组件
 
 ### 1. **WhiteMaskDataset** (`toolkit/data_loader.py`)
 - 自动生成纯白控制图像 RGB(255,255,255)
@@ -131,7 +122,7 @@ model:
   model_kwargs:
     kontext_inpaint_mode: true
     two_stage_training: true
-    stage1_steps: 1000  # 第一阶段步数
+    stage1_steps: 2000  # 第一阶段步数（示例，与你的配置保持一致）
     stage1_lr: 1e-4     # 第一阶段学习率
     stage2_lr: 5e-5     # 第二阶段学习率
 ```
@@ -149,22 +140,21 @@ process:
     stage2_lr: 5e-5
 ```
 
-### 4. **多轮编辑推理** (`inference_kontext_inpaint.py`)
-- 支持单次和多轮编辑模式
-- 保持Kontext的多轮一致性
-- 自动生成纯白控制图像
+### 4. **推理脚本** (`inference_kontext_inpaint.py`)
+- 支持单次推理
+- 自动生成纯白控制图像（伪 mask-free）
 
 ---
 
-## 🔧 训练流程详解
+## 训练流程详解
 
-### 阶段1: Projection层预训练 (前1000步)
+### 阶段1: Projection层预训练 (前2000步)
 - **目标**: 让模型学会利用纯白mask信号
 - **冻结**: 整个Transformer主干
 - **训练**: 仅32→hidden投影层
 - **学习率**: 1e-4
 
-### 阶段2: 全模型微调 (后2000步)  
+### 阶段2: 全模型微调（剩余步数）  
 - **目标**: 优化整体inpainting性能
 - **解冻**: 所有模型参数
 - **训练**: 投影层 + Transformer主干
@@ -172,7 +162,7 @@ process:
 
 ---
 
-## 📊 与其他方案对比
+## 与其他方案对比
 
 | 特性 | Kontext-inpaint | 标准LoRA微调 | 传统Inpainting |
 |------|-----------------|--------------|----------------|
@@ -184,27 +174,12 @@ process:
 
 ---
 
-## 🎨 使用示例
-
-### 多轮编辑工作流
-```python
-# 示例：人像修饰工作流
-prompts = [
-    "improve the lighting",           # 第1轮：改善光照
-    "make the person smile",          # 第2轮：调整表情  
-    "add professional background",    # 第3轮：更换背景
-    "enhance skin texture",           # 第4轮：优化细节
-    "final color grading"            # 第5轮：最终调色
-]
-
-for i, prompt in enumerate(prompts):
-    result = kontext_inpaint(current_image, white_mask, prompt)
-    current_image = result  # 用于下一轮
-```
+## 使用示例
+（留空：后续补充基于当前数据集“add furniture”的最佳实践）
 
 ---
 
-## 🧭 代码与配置路径总览
+## 代码与配置路径总览
 
 - 训练入口与作业系统
   - `train_kontext_inpaint.py`：两阶段训练入口（调用标准 job 系统）
@@ -241,7 +216,7 @@ for i, prompt in enumerate(prompts):
   - `toolkit/config.py`：在读取 YAML 时，若 `training_folder` 为 `/cloud/cloud-ssd1/training_output`，自动重写为 `/cloud/cloud-ssd1/training_output_YYYYMMDD_HHMMSS`
 
 - 推理与验证
-  - `inference_kontext_inpaint.py`：独立推理脚本（单次/多轮）
+  - `inference_kontext_inpaint.py`：独立推理脚本（单次）
   - 训练过程内置采样：在 `TrainFineTuneProcess.sample_images` 中，每 1000 步与 step=0 生成对比图
 
 > 修改指引：
@@ -252,7 +227,7 @@ for i, prompt in enumerate(prompts):
 
 ---
 
-## 🔮 未来扩展方向
+## 未来扩展方向
 
 ### SeedVR2 风格集成
 - **多通道输入**: RGB + Depth + Normal + Semantic
@@ -266,13 +241,13 @@ for i, prompt in enumerate(prompts):
 
 ---
 
-## 📄 许可证
+## 许可证
 
 本项目基于原 ai-toolkit 许可证，扩展部分遵循相同协议。
 
 ---
 
-## 🤝 贡献
+## 贡献
 
 欢迎提交Issue和Pull Request来改进Kontext-inpaint！
 
