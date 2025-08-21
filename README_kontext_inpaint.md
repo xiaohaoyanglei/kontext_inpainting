@@ -64,6 +64,11 @@ python train_kontext_inpaint.py /cloud/cloud-ssd1/kontext_inpainting/config/trai
 python run.py /cloud/cloud-ssd1/kontext_inpainting/config/train_kontext_inpaint.yaml
 ```
 
+快速复制使用（常用一条）：
+```bash
+python /cloud/cloud-ssd1/kontext_inpainting/run.py /cloud/cloud-ssd1/kontext_inpainting/config/train_kontext_inpaint.yaml
+```
+
 训练配置与流程说明：
 
 - 训练流程由 `jobs/process/TrainFineTuneProcess.py` 实现并在运行时由 `train_kontext_inpaint.py` 调用。
@@ -80,6 +85,17 @@ python inference_kontext_inpaint.py \
     --source_image "test_image.jpg" \
     --prompt "make the person smile" \
     --output "result.png"
+```
+
+使用 checkpoint 目录（无 model_index.json）的完整推理命令（与训练保持一致的数据流；本项目数据集统一提示词为“add furniture”）：
+```bash
+python /cloud/cloud-ssd1/kontext_inpainting/inference_kontext_inpaint.py \
+  --model_path "/cloud/cloud-ssd1/training_output_YYYYMMDD_HHMMSS/checkpoints/step_00XXXX" \
+  --base_model_path "/cloud/cloud-ssd1/FLUX.1-Fill-dev" \
+  --source_image "/cloud/cloud-ssd1/test.png" \
+  --prompt "add furniture" \
+  --output "/cloud/cloud-ssd1/training_output_YYYYMMDD_HHMMSS/infer_add_furniture.png" \
+  --steps 30 --guidance 6.0 --seed 42 --size 512
 ```
 
 #### 多轮编辑
